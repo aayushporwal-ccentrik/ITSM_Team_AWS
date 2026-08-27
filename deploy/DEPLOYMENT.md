@@ -13,6 +13,34 @@ Nginx replaces the BTP approuter + HTML5 repo + destination service.
 Custom JWT auth (`srv/auth.js`) replaces XSUAA. PostgreSQL replaces HANA.
 `deploy/` (this folder) replaces `mta.yaml`.
 
+> **Fast path:** once the repo is cloned to `/opt/itsm/app` (see §1a below),
+> `sudo bash /opt/itsm/app/deploy/setup-app.sh` does sections 2–7 in one shot
+> (packages, swap, Node 22, PostgreSQL, env file, `cds deploy`, systemd, nginx,
+> firewall). It's idempotent and never overwrites an existing `/etc/itsm/itsm.env`.
+> The sections below are the manual walkthrough / reference for when it needs
+> tweaking.
+
+### §1a — get the repo onto the box (private repo → deploy key)
+
+Browser SSH into the instance, then paste these (one line at a time if paste misbehaves):
+
+```bash
+sudo apt-get update -y && sudo apt-get install -y git
+id itsm >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir /opt/itsm --shell /usr/sbin/nologin itsm
+sudo mkdir -p /opt/itsm/app /opt/itsm/.ssh && sudo chown -R itsm:itsm /opt/itsm && sudo chmod 700 /opt/itsm/.ssh
+sudo -u itsm -H ssh-keygen -t ed25519 -N '' -f /opt/itsm/.ssh/id_ed25519 -C itsm-lightsail
+sudo -u itsm -H bash -c 'ssh-keyscan -t ed25519 github.com >> /opt/itsm/.ssh/known_hosts'
+sudo cat /opt/itsm/.ssh/id_ed25519.pub
+```
+
+Copy that public key → GitHub repo **Settings → Deploy keys → Add deploy key**
+(title `lightsail`, **do not** tick "Allow write access"). Then:
+
+```bash
+sudo -u itsm -H git clone git@github.com:aayushporwal-ccentrik/ITSM_Team_AWS.git /opt/itsm/app
+sudo bash /opt/itsm/app/deploy/setup-app.sh
+```
+
 ---
 
 ## 0. What you have
