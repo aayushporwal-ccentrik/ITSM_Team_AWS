@@ -18,6 +18,9 @@
     "start": "cds-serve"
   },
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "cds": {
     "requires": {
       "[development]": {
@@ -29,10 +32,21 @@
         }
       },
       "auth": {
+        "kind": "custom",
         "impl": "srv/auth.js"
       },
       "[hybrid]": {
         "db": "hana"
+      },
+      "[production]": {
+        "db": {
+          "kind": "postgres",
+          "impl": "@cap-js/postgres",
+          "pool": {
+            "max": 8,
+            "min": 0
+          }
+        }
       },
       "db": "hana"
     }
