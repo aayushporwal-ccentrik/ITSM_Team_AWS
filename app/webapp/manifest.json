@@ -6,7 +6,7 @@
     "title": "ITSM - New Incident",
     "dataSources": {
       "incidentService": {
-        "uri": "odata/v4/ITSMService/",
+        "uri": "/odata/v4/ITSMService/",
         "type": "OData",
         "settings": {
           "odataVersion": "4.0"
