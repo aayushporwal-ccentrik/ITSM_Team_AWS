@@ -1,0 +1,58 @@
+# ITSM CAP backend — systemd unit
+#
+# Install:
+#   sudo cp deploy/systemd/itsm.service /etc/systemd/system/itsm.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now itsm
+#
+# Logs:     journalctl -u itsm -f
+# Restart:  sudo systemctl restart itsm
+
+[Unit]
+Description=ITSM CAP service (Node.js / OData v4)
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+# Don't crash-loop forever on a bad env file — 5 fails in 60s and it stops.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=itsm
+Group=itsm
+WorkingDirectory=/opt/itsm/app
+
+# NODE_ENV=production activates the CDS "production" profile -> PostgreSQL
+# (see package.json cds.requires.[production]).
+Environment=NODE_ENV=production
+Environment=PORT=4004
+Environment=HOME=/opt/itsm
+
+# JWT secret + DB credentials. Root-owned dir, file is root:itsm 0640.
+# Never committed — see deploy/itsm.env.example for the template.
+EnvironmentFile=/etc/itsm/itsm.env
+
+# Direct node exec of the cds-serve entry point (bin from @sap/cds core,
+# always present even after `npm ci --omit=dev`). Picks up srv/server.js.
+ExecStart=/usr/bin/node node_modules/@sap/cds/bin/serve.js
+
+Restart=always
+RestartSec=5
+
+# 1 GB box: start reclaiming past 450M, hard ceiling 600M. Tune if the
+# OOM killer trips under real load (journalctl -k | grep -i oom).
+MemoryHigh=450M
+MemoryMax=600M
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/itsm
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
