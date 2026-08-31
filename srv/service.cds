@@ -9,9 +9,10 @@ service ITSMService {
 
     // Used by the Message Processor dropdown, the client-filter join, and
     // to resolve a logged-in user's org/theme.
-    // passwordHash is excluded here, so it can never leave the server —
-    // and an admin can never set one through the generic CRUD either.
-    entity Users              as projection on master.User excluding { passwordHash };
+    // passwordHash and cognitoUserId are excluded here, so they can never
+    // leave the server — and an admin can never set either through the
+    // generic CRUD.
+    entity Users              as projection on master.User excluding { passwordHash, cognitoUserId };
 
     // Which roles a user may log in as. Plain generic CRUD — the Admin
     // panel's role checkboxes just create/delete rows here.

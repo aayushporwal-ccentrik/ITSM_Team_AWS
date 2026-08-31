@@ -57,6 +57,13 @@ sap.ui.define([
 
       auth.login(sEmail, sPassword).then(function (oData) {
         that.byId("loginButton").setBusy(false);
+
+        // First login of an admin-created Cognito account: no token yet, they
+        // have to replace the emailed one-time password first.
+        if (oData.passwordChangeRequired) {
+          return that._openReset({ email: oData.email || sEmail, session: oData.session });
+        }
+
         that.getOwnerComponent().onLoggedIn(oData);
       }).catch(function (oError) {
         that.byId("loginButton").setBusy(false);
@@ -91,11 +98,17 @@ sap.ui.define([
 
       this.byId("forgotButton").setBusy(true);
 
-      // The reply is the same whether or not the address exists, so there
-      // is nothing here to branch on.
+      // The reply is the same whether or not the address exists.
       auth.forgotPassword(sEmail).then(function (oData) {
         that.byId("forgotButton").setBusy(false);
-        that._showForgotMessage("Success", oData.message);
+        if (oData.resetWithCode) {
+          // Cognito emailed a code — go straight to the code + new-password
+          // screen, pre-filled with the address they just typed.
+          that._openReset({ email: sEmail, code: true, message: oData.message });
+        } else {
+          // Local mode emailed a link — they click it, nothing more here.
+          that._showForgotMessage("Success", oData.message);
+        }
       }).catch(function (oError) {
         that.byId("forgotButton").setBusy(false);
         that._showForgotMessage("Error", oError.message);
@@ -114,16 +127,35 @@ sap.ui.define([
 
     // ===== Reset password =====
 
-    // The token comes straight out of the URL the email linked to.
+    // Arrived from a link in an email — the token is in the URL, so there is
+    // no code to type and no need to know who this is.
     _onShowReset: function (oEvent) {
-      this._sToken = oEvent.getParameter("arguments").token;
+      this._openReset({ token: oEvent.getParameter("arguments").token });
+    },
+
+    // The three ways into the reset block:
+    //   token   - emailed link carried it in the URL (local)
+    //   code    - the email held a code instead, so ask for it (needs email) (Cognito)
+    //   session - a new Cognito user replacing their one-time password
+    _openReset: function (oOptions) {
+      this._sToken = oOptions.token || null;
+      this._sEmail = oOptions.email || null;
+      this._sSession = oOptions.session || null;
+
       this._showBlock("resetBlock");
-      this.byId("resetMessage").setVisible(false);
+      this.byId("resetCodeRow").setVisible(!!oOptions.code);
       this.byId("resetForm").setVisible(true);
       this.byId("goToLoginButton").setVisible(false);
       this.byId("backToLoginLink").setVisible(true);
+      this.byId("resetCode").setValue("");
       this.byId("newPassword").setValue("");
       this.byId("confirmPassword").setValue("");
+
+      if (oOptions.message) {
+        this._showResetMessage("Success", oOptions.message);
+      } else {
+        this.byId("resetMessage").setVisible(false);
+      }
     },
 
     onResetPassword: function () {
@@ -138,10 +170,38 @@ sap.ui.define([
         return this._showResetMessage("Error", "Passwords do not match.");
       }
 
+      var sCode = this.byId("resetCode").getValue().trim();
+      if (this.byId("resetCodeRow").getVisible() && !sCode) {
+        return this._showResetMessage("Error", "Please enter the verification code from the email.");
+      }
+
       this.byId("resetButton").setBusy(true);
 
-      auth.resetPassword(this._sToken, sPassword, sConfirm).then(function (oData) {
+      // A session means this is a new Cognito user setting their first
+      // password; everything else is a reset, by link token or emailed code.
+      var oPromise = this._sSession
+        ? auth.setInitialPassword({
+            email: this._sEmail,
+            session: this._sSession,
+            password: sPassword,
+            confirmPassword: sConfirm
+          })
+        : auth.resetPassword({
+            token: this._sToken || sCode,
+            email: this._sEmail,
+            password: sPassword,
+            confirmPassword: sConfirm
+          });
+
+      oPromise.then(function (oData) {
         that.byId("resetButton").setBusy(false);
+
+        // Setting a first password also signs the user in — no reason to send
+        // them back to the login form.
+        if (oData.token) {
+          return that.getOwnerComponent().onLoggedIn(oData);
+        }
+
         that.byId("resetForm").setVisible(false);
         that.byId("backToLoginLink").setVisible(false);
         that.byId("goToLoginButton").setVisible(true);

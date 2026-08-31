@@ -253,6 +253,14 @@
             <!-- Hidden once the reset succeeds, so the only thing left is the
                  confirmation and the Go To Login button. -->
             <VBox id="resetForm">
+              <!-- Shown only when the email carried a code instead of a link
+                   (Cognito). Hidden for a link-token reset and for a new user
+                   setting their first password. -->
+              <VBox id="resetCodeRow" visible="false">
+                <Label text="Verification Code" labelFor="resetCode" class="authFieldLabel"/>
+                <Input id="resetCode" placeholder="Code from the email" submit=".onResetPassword" class="authInput"/>
+              </VBox>
+
               <Label text="New Password" labelFor="newPassword" class="authFieldLabel"/>
               <VBox class="authPasswordField">
                 <Input id="newPassword" type="Password" submit=".onResetPassword" class="authInput"/>

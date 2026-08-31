@@ -28,6 +28,11 @@ sap.ui.define([], function () {
     var oHeaders = { "Content-Type": "application/json" };
     var sToken = auth.getToken();
     if (sToken) { oHeaders.Authorization = "Bearer " + sToken; }
+    // Cognito's token lists the roles a user may use but no active one; the
+    // backend re-checks this header against the token on every request. The
+    // local provider reads the role from the token and ignores it.
+    var sRole = auth.getRole();
+    if (sRole) { oHeaders["X-Active-Role"] = sRole; }
 
     return fetch("/auth/" + sPath, {
       method: "POST",
@@ -74,7 +79,11 @@ sap.ui.define([], function () {
 
     login: function (sEmail, sPassword) {
       return post("login", { email: sEmail, password: sPassword }).then(function (oData) {
-        auth.setSession(oData.token, oData.role);
+        // A brand-new Cognito user has to replace their one-time password
+        // before any token exists — nothing to store yet in that case.
+        if (!oData.passwordChangeRequired) {
+          auth.setSession(oData.token, oData.role);
+        }
         return oData;
       });
     },
@@ -91,15 +100,32 @@ sap.ui.define([], function () {
       return post("forgot-password", { email: sEmail });
     },
 
-    resetPassword: function (sToken, sPassword, sConfirmPassword) {
-      return post("reset-password", { token: sToken, password: sPassword, confirmPassword: sConfirmPassword });
+    // token is either the one from an emailed link (local) or a code the user
+    // typed (Cognito); email only matters for the code, which on its own does
+    // not say who is resetting. Caller passes whichever it has.
+    resetPassword: function (oParams) {
+      return post("reset-password", oParams);
+    },
+
+    // Finishes the "choose your own password" step a newly created Cognito
+    // user lands on at first login. session comes from that login reply, and
+    // the response signs them straight in.
+    setInitialPassword: function (oParams) {
+      return post("set-initial-password", oParams).then(function (oData) {
+        auth.setSession(oData.token, oData.role);
+        return oData;
+      });
     },
 
     // The OData model has to carry the token on every request. Called on
     // startup and again after every role switch, since the token changes.
     applyToken: function (oModel) {
       var sToken = auth.getToken();
-      oModel.changeHttpHeaders({ Authorization: sToken ? "Bearer " + sToken : undefined });
+      var sRole = auth.getRole();
+      oModel.changeHttpHeaders({
+        Authorization: sToken ? "Bearer " + sToken : undefined,
+        "X-Active-Role": sRole || undefined
+      });
     }
   };
 

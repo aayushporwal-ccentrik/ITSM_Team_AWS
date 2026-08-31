@@ -10,8 +10,9 @@ Browser ──80──> Nginx ──> 127.0.0.1:4004  CAP (Node.js, systemd)
 ```
 
 Nginx replaces the BTP approuter + HTML5 repo + destination service.
-Custom JWT auth (`srv/auth.js`) replaces XSUAA. PostgreSQL replaces HANA.
-`deploy/` (this folder) replaces `mta.yaml`.
+Auth (`srv/auth.js`) replaces XSUAA — either the built-in local email/password
++ JWT provider, or AWS Cognito, chosen by `AUTH_PROVIDER` (see §4A).
+PostgreSQL replaces HANA. `deploy/` (this folder) replaces `mta.yaml`.
 
 > **Fast path:** once the repo is cloned to `/opt/itsm/app` (see §1a below),
 > `sudo bash /opt/itsm/app/deploy/setup-app.sh` does sections 2–7 in one shot
@@ -249,6 +250,133 @@ kill %1
 
 ---
 
+## 4A. Authentication provider — local or AWS Cognito
+
+`srv/auth.js` is a selector. `AUTH_PROVIDER` in `/etc/itsm/itsm.env` decides:
+
+| `AUTH_PROVIDER` | Provider | Identity / passwords | Notes |
+|---|---|---|---|
+| unset or `local` | `srv/auth/local-auth.js` | ITSM `User` table (bcrypt), HS256 JWT | the milestone-1 default |
+| `cognito` | `srv/auth/cognito-auth.js` | AWS Cognito user pool | ITSM `User` table still owns name/email/org/team/role |
+
+Switching is **just the env var + a restart**. Nothing else changes — same login page, same OData service, same ticket/email/reminder logic. Rollback is the same move in reverse.
+
+```bash
+sudo nano /etc/itsm/itsm.env          # set AUTH_PROVIDER + the COGNITO_*/AWS_* block
+sudo systemctl restart itsm
+journalctl -u itsm -n 20 --no-pager   # expect: [auth] provider: cognito  +  [auth] cognito JWKS loaded
+```
+
+`deploy/systemd/itsm.service` needs **no change** — it loads the whole env file via `EnvironmentFile=`.
+
+### 4A.1 AWS prerequisites (one-time, in the AWS console)
+
+**User Pool**
+- Region: same as the Lightsail box (`ap-south-1`).
+- Sign-in: **email**, and the Cognito user name **is** the email (not an alias over a UUID). The backend calls every `Admin*` API with `Username = <email>`.
+- Password policy: minimum length **8** (matches the app's own check).
+- Self-service sign-up: **disabled** — users are provisioned only from the ITSM Admin panel.
+- ID token expiration: **8 hours** (see limitation note below — this is the session length).
+
+**Groups** — create exactly these four, names case-sensitive, matching the DB role codes:
+
+```
+END_USER   SERVICE_GROUP   CONSULTANT   ADMIN
+```
+
+**App client** — one public client:
+- **No client secret** (leave `COGNITO_CLIENT_SECRET` empty).
+- Auth flows: enable `ALLOW_USER_PASSWORD_AUTH` and `ALLOW_REFRESH_TOKEN_AUTH`.
+
+**IAM user** `itsm-cognito-backend` with an access key and this least-privilege policy (replace the ARN):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "cognito-idp:AdminCreateUser",
+      "cognito-idp:AdminDeleteUser",
+      "cognito-idp:AdminAddUserToGroup",
+      "cognito-idp:AdminRemoveUserFromGroup",
+      "cognito-idp:AdminListGroupsForUser",
+      "cognito-idp:AdminEnableUser",
+      "cognito-idp:AdminDisableUser"
+    ],
+    "Resource": "arn:aws:cognito-idp:ap-south-1:<ACCOUNT_ID>:userpool/<USER_POOL_ID>"
+  }]
+}
+```
+
+`InitiateAuth`, `ForgotPassword` and `ConfirmForgotPassword` are unauthenticated — they need no credentials and are not in the policy.
+
+### 4A.2 Env vars
+
+In `/etc/itsm/itsm.env` (template: `deploy/itsm.env.example`):
+
+```
+AUTH_PROVIDER=cognito
+COGNITO_REGION=ap-south-1
+COGNITO_USER_POOL_ID=ap-south-1_xxxxxxxxx
+COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+COGNITO_CLIENT_SECRET=
+AWS_REGION=ap-south-1
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+`JWT_SECRET` and the other `JWT_*` vars are **not used** in Cognito mode (`local-auth.js` is never loaded) — leave them, they do no harm.
+
+### 4A.3 Migrating the existing users
+
+The seed / production users live in the Postgres `User` table but not in Cognito yet. For each one:
+
+1. `AdminCreateUser` with `Username = <email>` (Cognito emails them a temporary password).
+2. `AdminAddUserToGroup` for every role they hold — check `master.UserRole` for that `userId`, not just `User.role`.
+3. `User.cognitoUserId` is left alone — on that user's **first Cognito login the backend matches them by email and writes `cognitoUserId` back automatically** (`srv/auth/cognito-auth.js` `itsmUser()`).
+
+Bulk snippet (run where the AWS CLI is configured with the IAM user above):
+
+```bash
+POOL=ap-south-1_xxxxxxxxx
+sudo -u postgres psql -tAF, itsm -c \
+  "SELECT u.email, string_agg(COALESCE(r.role, u.role), ' ') \
+   FROM \"itsm_master_User\" u \
+   LEFT JOIN \"itsm_master_UserRole\" r ON r.\"userId\" = u.\"userId\" \
+   WHERE u.\"isActive\" GROUP BY u.email, u.role" \
+| while IFS=, read -r EMAIL ROLES; do
+    aws cognito-idp admin-create-user --user-pool-id "$POOL" --username "$EMAIL" \
+      --user-attributes Name=email,Value="$EMAIL" Name=email_verified,Value=true || true
+    for R in $ROLES; do
+      aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" --username "$EMAIL" --group-name "$R" || true
+    done
+  done
+```
+
+### 4A.4 `cds deploy` and `cognitoUserId`
+
+`npx cds-deploy` reseeds `User` from the CSV, so `cognitoUserId` goes back to `NULL` for the seed users. This is **not** a problem: the Cognito users still exist, and the email-match backfill re-links them on the next login. Any user created through the Admin panel (not in a CSV) is wiped as always — take the `pg_dump` first (§9).
+
+### 4A.5 Known limitations (accepted for now)
+
+- **Session length = Cognito ID token validity.** No refresh-token flow yet, so users re-login when the token expires — set the pool's ID token expiry to 8h to match the old JWT.
+- **In-memory user cache** (`cognito-auth.js` `userBySub`) — fine for one instance; revisit before running more than one.
+- **No `after DELETE Users` → Cognito sync.** Deleting a user in the Admin panel leaves the Cognito account orphaned (they can't log in — no ITSM row — but the pool keeps the entry). Remove it by hand or with `aws cognito-idp admin-delete-user`.
+
+### 4A.6 Rollback to local
+
+```bash
+sudo sed -i 's/^AUTH_PROVIDER=cognito/AUTH_PROVIDER=local/' /etc/itsm/itsm.env
+# make sure JWT_SECRET is still set in the file
+sudo systemctl restart itsm
+journalctl -u itsm -n 10 --no-pager   # expect: [auth] provider: local
+```
+
+Local-mode logins work immediately for anyone who still has a `passwordHash` row. Users created while Cognito was active have no `passwordHash` — they use "Forgot Password?" to set one.
+
+---
+
 ## 5. systemd service
 
 ```bash
@@ -306,8 +434,19 @@ Open **http://3.111.154.43/** in a browser. Walk the whole flow:
 - [ ] Consultant: resolve it
 - [ ] Reminder bell works
 - [ ] Admin: create an org, set a theme colour, upload a logo
+- [ ] Admin: create a user (single-role and multi-role), deactivate/reactivate one
+
+**Local provider** (`AUTH_PROVIDER` unset/`local`):
 - [ ] Forgot password → check the link: `journalctl -u itsm | grep 'Password link'`
 - [ ] Open that link, set a new password, log in with it
+
+**Cognito provider** (`AUTH_PROVIDER=cognito`, after §4A):
+- [ ] `journalctl -u itsm` shows `[auth] provider: cognito` and `cognito JWKS loaded`
+- [ ] Admin-created user gets a Cognito invite email → first login prompts for a new password → lands in the app
+- [ ] Multi-role Cognito user → role selection → switch role (no re-login)
+- [ ] Forgot password → Cognito emails a **code** → reset screen asks for email + code + new password
+- [ ] Admin creates a user → the Cognito user pool shows the account in the matching group(s)
+- [ ] Admin deactivates a user → that user can no longer log in
 
 If all green — milestone 1 is done.
 
@@ -403,4 +542,13 @@ No application code changes. Also plan to bump the instance to 2 GB RAM at that 
 | Attachment upload fails at ~a few MB | `client_max_body_size` | already 15m in the conf; raise if needed, watch RAM |
 | Backend killed randomly under load | OOM on 1 GB | `journalctl -k | grep -i oom`; lower PG `shared_buffers`, raise swap, or bump the instance |
 | `npm ci` killed | OOM during install | ensure swap is on; add `NODE_OPTIONS=--max-old-space-size=512` |
-| Password reset link never arrives | email intentionally unset | `journalctl -u itsm | grep 'Password link'` — copy it from the log |
+| Password reset link never arrives (local mode) | email intentionally unset | `journalctl -u itsm | grep 'Password link'` — copy it from the log |
+| Service won't start, `AUTH_PROVIDER=cognito needs COGNITO_REGION...` | Cognito vars missing from the env file | fill `COGNITO_REGION`/`COGNITO_USER_POOL_ID`/`COGNITO_CLIENT_ID` (§4A.2) |
+| `cognito JWKS preload failed` in the log | wrong `COGNITO_USER_POOL_ID`/`COGNITO_REGION`, or no outbound HTTPS | verify the pool id; `curl https://cognito-idp.<region>.amazonaws.com/<poolId>/.well-known/jwks.json` from the box |
+| Every Cognito login → generic 401, log shows `InitiateAuth error: NotAuthorizedException - Client ... configured with secret but SECRET_HASH was not received` | the app client has a secret but `COGNITO_CLIENT_SECRET` is empty | copy the client secret into `COGNITO_CLIENT_SECRET` and restart, **or** use a public (no-secret) app client |
+| Every Cognito login → generic 401, log shows `... USER_PASSWORD_AUTH flow not enabled for this client` | app client missing the auth flow | enable `ALLOW_USER_PASSWORD_AUTH` on the client |
+| Cognito login → `Your account is not set up in ITSM` | Cognito user exists, no matching `User` row (email mismatch) | check the email matches a row in `itsm_master_User` exactly |
+| Cognito login → `No role is assigned to your account` | user is in no ITSM group in Cognito | `aws cognito-idp admin-add-user-to-group` with `END_USER`/`SERVICE_GROUP`/`CONSULTANT`/`ADMIN` |
+| Admin "create user" → `Could not create the user in Cognito: AccessDeniedException` | IAM key missing the `Admin*` permissions | attach the §4A.1 policy; check `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` |
+| Admin "create user" → `...: UsernameExistsException` | that email already exists in the pool | delete the stale Cognito user, or reuse it — the ITSM row will link by email on first login |
+| Multi-role user's extra roles don't appear in Cognito | group name mismatch | Cognito group names must be exactly `END_USER` / `SERVICE_GROUP` / `CONSULTANT` / `ADMIN` |

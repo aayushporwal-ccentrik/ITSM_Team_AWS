@@ -2,10 +2,12 @@
   "name": "ITSM",
   "version": "1.0.0",
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1121.0",
     "@cap-js/hana": "^2",
     "@cap-js/postgres": "^2",
     "@sap/cds": "^9",
     "@sap/xssec": "^4",
+    "aws-jwt-verify": "^5.2.1",
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^9.0.5"

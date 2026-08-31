@@ -1,11 +1,16 @@
 const cds = require("@sap/cds");
-const { SELECT, INSERT, UPDATE } = cds.ql;
+const { SELECT, INSERT, UPDATE, DELETE } = cds.ql;
 const { buildConfirmationEmailTemplate, buildServiceGroupEmailTemplate, buildAssignmentEmailTemplate, buildEmail } = require("./email-templates");
 const { transporter, sendEmailSafe } = require("./ticket-helpers");
 const { themeForTicket } = require("./email-theme");
 const { Ticket, IncidentForm, TicketLog, Attachment } = cds.entities("itsm.transaction");
 const { TicketCounter, User, UserRole, Organization } = cds.entities("itsm.master");
-const { sendPasswordSetupEmail } = require("./auth");
+// The active auth provider (srv/auth.js selector). local-auth.js exports only
+// sendPasswordSetupEmail; cognito-auth.js also exports createUser/setUserRoles/
+// setUserActive. Every Cognito-side call below is guarded on those being
+// present, so this whole block is a no-op in local mode.
+const auth = require("./auth");
+const { sendPasswordSetupEmail } = auth;
 
 // Files ride along with the notification so a recipient can open them from
 // the mail itself — the content endpoint is behind authentication, so a plain
@@ -72,6 +77,10 @@ module.exports = cds.service.impl(function () {
   this.before("UPDATE", "Organizations", onBeforeUpdateOrganization);
   this.before("CREATE", "Users", onBeforeCreateUser);
   this.after("CREATE", "Users", onAfterCreateUser);
+  this.before("UPDATE", "Users", onBeforeUpdateUser);
+  this.after("CREATE", "UserRoles", onUserRoleCreated);
+  this.before("DELETE", "UserRoles", onBeforeDeleteUserRole);
+  this.after("DELETE", "UserRoles", onUserRoleDeleted);
   this.after("READ", "Tickets", onAfterReadTickets);
 });
 
@@ -658,8 +667,9 @@ function onBeforeCreateUser(req) {
   if (!req.data.userId) { req.data.userId = req.data.email; }
 }
 
-// A new user has no password. Give them their primary role and mail them a
-// setup link — the admin never sees or sets the password.
+// A new user has no password. Give them their primary role, then either create
+// the Cognito identity (Cognito mails the invite) or, in local mode, mail our
+// own setup link. The admin never sees or sets the password.
 async function onAfterCreateUser(oUser, req) {
   if (!oUser.userId) { return; }
 
@@ -670,9 +680,77 @@ async function onAfterCreateUser(oUser, req) {
     }
   }
 
-  if (oUser.email) {
-    await sendPasswordSetupEmail(oUser, false);
+  if (!oUser.email) { return; }
+
+  // Cognito mode: the identity must exist in Cognito too, and the invite mail
+  // Cognito sends replaces our own. If Cognito refuses, the ITSM row would be
+  // an account nobody can log in to, so it is rolled back.
+  if (auth.createUser) {
+    try {
+      const sub = await auth.createUser(oUser, oUser.role ? [oUser.role] : []);
+      await UPDATE(User).set({ cognitoUserId: sub }).where({ userId: oUser.userId });
+    } catch (error) {
+      await DELETE.from(User).where({ userId: oUser.userId });
+      await DELETE.from(UserRole).where({ userId: oUser.userId });
+      return req.error(400, `Could not create the user in Cognito: ${error.name || "unknown error"}`);
+    }
+    return;
   }
+
+  await sendPasswordSetupEmail(oUser, false);
+}
+
+// Cognito mode only (guarded): keep the Cognito account in step when an admin
+// deactivates or reactivates a user. Role changes go through the UserRoles
+// handlers below, not here.
+async function onBeforeUpdateUser(req) {
+  if (!auth.setUserActive || req.data.isActive === undefined) { return; }
+
+  const [key] = req.params;
+  const current = await SELECT.one.from(User).where(key);
+  if (!current || !current.cognitoUserId || req.data.isActive === current.isActive) { return; }
+
+  try {
+    await auth.setUserActive(current, req.data.isActive);
+  } catch (error) {
+    return req.error(400, `Could not update the user in Cognito: ${error.name || "unknown error"}`);
+  }
+}
+
+// The Admin panel edits a user's roles as UserRoles rows via generic CRUD, not
+// through User.role — so this is the only place multi-role changes reach
+// Cognito. After any add/remove we push the user's full current role set;
+// setUserRoles reconciles the Cognito groups from there. Cognito mode only.
+async function syncCognitoGroups(userId, req) {
+  if (!auth.setUserRoles || !userId) { return; }
+
+  const user = await SELECT.one.from(User).where({ userId });
+  if (!user || !user.cognitoUserId) { return; }
+
+  const rows = await SELECT.from(UserRole).where({ userId });
+  const codes = [...new Set(rows.map(row => row.role).filter(Boolean))];
+
+  try {
+    await auth.setUserRoles(user, codes);
+  } catch (error) {
+    return req.error(400, `Could not sync roles to Cognito: ${error.name || "unknown error"}`);
+  }
+}
+
+function onUserRoleCreated(row, req) {
+  return syncCognitoGroups(row && row.userId, req);
+}
+
+// after DELETE can't see the removed row, so capture its owner first.
+async function onBeforeDeleteUserRole(req) {
+  if (!auth.setUserRoles) { return; }
+  const [key] = req.params;
+  const row = await SELECT.one.from(UserRole).where(key);
+  req.__cognitoSyncUserId = row && row.userId;
+}
+
+function onUserRoleDeleted(_data, req) {
+  return syncCognitoGroups(req.__cognitoSyncUserId, req);
 }
 
 async function onSendPasswordSetup(req) {

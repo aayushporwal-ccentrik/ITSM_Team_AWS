@@ -74,6 +74,19 @@ else
   cat > "$ENVFILE" <<EOF
 NODE_ENV=production
 PORT=4004
+
+# Auth: "local" (email/password + JWT) or "cognito" (AWS Cognito).
+# To switch to Cognito: set AUTH_PROVIDER=cognito, fill the COGNITO_*/AWS_*
+# block below, then restart itsm. See deploy/DEPLOYMENT.md section 4A.
+AUTH_PROVIDER=local
+#COGNITO_REGION=
+#COGNITO_USER_POOL_ID=
+#COGNITO_CLIENT_ID=
+#COGNITO_CLIENT_SECRET=
+#AWS_REGION=
+#AWS_ACCESS_KEY_ID=
+#AWS_SECRET_ACCESS_KEY=
+
 JWT_SECRET=$JWT_SECRET
 JWT_ISSUER=itsm
 JWT_AUDIENCE=itsm-app
