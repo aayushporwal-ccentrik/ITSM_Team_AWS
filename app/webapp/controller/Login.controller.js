@@ -11,11 +11,10 @@ sap.ui.define([
   return Controller.extend("itsm.ui.controller.Login", {
 
     onTogglePassword: function (oEvent) {
-      var oBtn = oEvent.getSource();
-      var oInput = this.byId(oBtn.data("target"));
+      var oInput = oEvent.getSource();
       var bHidden = oInput.getType() === "Password";
       oInput.setType(bHidden ? "Text" : "Password");
-      oBtn.setIcon(bHidden ? "sap-icon://hide" : "sap-icon://show");
+      oInput.setValueHelpIconSrc(bHidden ? "sap-icon://hide" : "sap-icon://show");
     },
 
     onInit: function () {

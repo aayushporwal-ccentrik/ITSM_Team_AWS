@@ -11,11 +11,14 @@
 // mountAuthRoutes and sendPasswordSetupEmail as properties. Nothing else in
 // the app needs to know which one is active.
 //
-// Selection is env-var only. Local dev leaves AUTH_PROVIDER unset; the AWS
-// deployment sets AUTH_PROVIDER=cognito in /etc/itsm/itsm.env. Flipping it
-// back to unset + restarting the service is the rollback.
+// Selection: AUTH_PROVIDER env var wins if set (that's what the AWS
+// deployment sets in /etc/itsm/itsm.env); otherwise it falls back to the
+// active CAP profile's cds.requires.auth.provider (package.json), so local
+// dev and hybrid don't need the env var set at all. Flipping AUTH_PROVIDER
+// back to unset + restarting the service is still the rollback in prod.
+const cds = require("@sap/cds");
 
-const PROVIDER = process.env.AUTH_PROVIDER || "local";
+const PROVIDER = process.env.AUTH_PROVIDER || cds.env.requires?.auth?.provider || "local";
 
 if (PROVIDER !== "local" && PROVIDER !== "cognito") {
   throw new Error(`Unknown AUTH_PROVIDER "${PROVIDER}" — expected "local" or "cognito"`);

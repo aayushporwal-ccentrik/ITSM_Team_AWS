@@ -12,7 +12,7 @@
          it to go back to inside this module. -->
     <Bar class="appHeader">
       <contentLeft>
-        <Image src="images/ccentrik.png" height="30px" densityAware="false" class="appLogo" press=".onGoAssigned"/>
+        <Image src="{= ${role>/theme/logo} || 'images/ccentrik.png' }" height="30px" densityAware="false" class="appLogo" press=".onGoAssigned"/>
       </contentLeft>
       <contentMiddle>
         <Title text="Consultant Workspace" class="appHeaderTitle"/>

@@ -2,10 +2,11 @@ sap.ui.define([
   "sap/ui/core/mvc/Controller",
   "sap/ui/model/json/JSONModel",
   "sap/m/MessageToast",
+  "sap/m/MessageBox",
   "sap/base/Log",
   "itsm/ui/model/userMenu",
-  "itsm/ui/model/busy"
-], function (Controller, JSONModel, MessageToast, Log, userMenu, busy) {
+  "itsm/ui/model/createGuard"
+], function (Controller, JSONModel, MessageToast, MessageBox, Log, userMenu, createGuard) {
   "use strict";
 
   var UPDATE_GROUP = "incidentGroup";
@@ -103,16 +104,23 @@ sap.ui.define([
       var that = this;
       var oModel = this.getOwnerComponent().getModel();
       var oDialog = this.byId("addOrgDialog");
-      var oContext = oModel.bindList("/Organizations").create({ name: sName, code: sCode });
+      var oListBinding = oModel.bindList("/Organizations");
+      var oContext = oListBinding.create({ name: sName, code: sCode });
 
-      busy.withBusy(oDialog, oContext.created().then(function () {
+      oDialog.setBusy(true);
+      createGuard.guard(oListBinding, oContext, oDialog);
+
+      oContext.created().then(function () {
+        oDialog.setBusy(false);
         oDialog.close();
         MessageToast.show("Organization created.");
         that._loadOrganizations();
       }).catch(function (oError) {
+        if (oError.canceled) { return; } // already shown by createGuard
+        oDialog.setBusy(false);
         Log.error("Organization create failed", oError);
-        MessageToast.show("Could not create organization.");
-      }));
+        MessageBox.error(oError.message || "Could not create organization.");
+      });
 
       // create() only queues the request on this batch group — nothing is
       // actually sent until submitBatch flushes it (same as everywhere else

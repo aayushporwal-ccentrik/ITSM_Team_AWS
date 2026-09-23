@@ -8,8 +8,9 @@ sap.ui.define([
   "sap/ui/unified/ColorPickerPopover",
   "itsm/ui/model/formatter",
   "itsm/ui/model/auth",
-  "itsm/ui/model/busy"
-], function (Controller, Filter, FilterOperator, MessageToast, MessageBox, Log, ColorPickerPopover, formatter, auth, busy) {
+  "itsm/ui/model/busy",
+  "itsm/ui/model/createGuard"
+], function (Controller, Filter, FilterOperator, MessageToast, MessageBox, Log, ColorPickerPopover, formatter, auth, busy, createGuard) {
   "use strict";
 
   var UPDATE_GROUP = "incidentGroup";
@@ -81,7 +82,13 @@ sap.ui.define([
     },
 
     onSaveDetails: function () {
+      var that = this;
       busy.withBusy(this.getView(), this.getOwnerComponent().getModel().submitBatch(UPDATE_GROUP).then(function () {
+        // code may have just changed — re-read it so new users get the
+        // current code, not the one this page loaded with (see _sOrgCode).
+        return that.getView().getBindingContext().requestProperty("code");
+      }).then(function (sCode) {
+        that._filterUsersByClient(sCode);
         MessageToast.show("Organization details saved.");
       }));
     },
@@ -451,7 +458,9 @@ sap.ui.define([
         // Same group as the deletes, so submitBatch(UPDATE_GROUP) below sends both.
         var oListBinding = oModel.bindList("/UserRoles", undefined, undefined, undefined, { $$groupId: UPDATE_GROUP });
         aRoles.forEach(function (sRole) {
-          if (aExisting.indexOf(sRole) === -1) { oListBinding.create({ userId: sUserId, role: sRole }); }
+          if (aExisting.indexOf(sRole) === -1) {
+            createGuard.guard(oListBinding, oListBinding.create({ userId: sUserId, role: sRole }), null);
+          }
         });
 
         // create()/delete() only queue on the batch group — this is what sends them.
@@ -514,7 +523,8 @@ sap.ui.define([
         return;
       }
 
-      var oContext = oModel.bindList("/Users").create({
+      var oListBinding = oModel.bindList("/Users");
+      var oContext = oListBinding.create({
         userId: sEmail,
         name: sName,
         email: sEmail,
@@ -523,18 +533,24 @@ sap.ui.define([
         client: this._sOrgCode
       });
 
-      busy.withBusy(oDialog, oContext.created().then(function () {
+      oDialog.setBusy(true);
+      createGuard.guard(oListBinding, oContext, oDialog);
+
+      oContext.created().then(function () {
         // The backend already added the primary role and emailed the setup
         // link (srv/service.js after CREATE Users) — this adds the rest.
         return that._syncUserRoles(sEmail, aRoles);
       }).then(function () {
+        oDialog.setBusy(false);
         oDialog.close();
         MessageToast.show("User created. A password setup link has been emailed to them.");
         that.byId("orgUsersTable").getBinding("items").refresh();
       }).catch(function (oError) {
+        if (oError.canceled) { return; } // already handled above, by our own delete()
+        oDialog.setBusy(false);
         Log.error("User create failed", oError);
-        MessageToast.show("Could not create user.");
-      }));
+        MessageBox.error(oError.message || "Could not create user.");
+      });
 
       // Same miss as Organizations.controller.js's onSaveOrganization had:
       // create() only queues the request, submitBatch is what actually

@@ -120,11 +120,16 @@ async function groupsOf(username) {
 
 // Cognito identifies a user by "sub"; ITSM uses User.userId everywhere else.
 // User.cognitoUserId is the link. Cached per sub so a busy request stream
-// doesn't hit the DB every time — cleared by forgetUser on role/active change.
+// doesn't hit the DB every time — cleared by forgetUser on role/active change,
+// and also expires on its own after USER_CACHE_TTL_MS so a warm instance that
+// never got that call (AWS runs more than one) doesn't keep serving a
+// deactivated/re-roled user indefinitely.
 const userBySub = new Map();
+const USER_CACHE_TTL_MS = 60 * 1000;
 
 async function itsmUser(sub, email) {
-  if (userBySub.has(sub)) { return userBySub.get(sub); }
+  const cached = userBySub.get(sub);
+  if (cached && Date.now() - cached.cachedAt < USER_CACHE_TTL_MS) { return cached.entry; }
 
   const { User } = cds.entities("itsm.master");
   let user = await SELECT.one.from(User).where({ cognitoUserId: sub });
@@ -141,7 +146,7 @@ async function itsmUser(sub, email) {
   if (!user) { return null; }
 
   const entry = { userId: user.userId, email: user.email, name: user.name, isActive: user.isActive };
-  userBySub.set(sub, entry);
+  userBySub.set(sub, { entry, cachedAt: Date.now() });
   return entry;
 }
 
@@ -343,7 +348,10 @@ async function onSelectRole(req, res) {
   }
 
   const role = String(req.body.role || "");
-  const roles = rolesFromGroups(payload["cognito:groups"]);
+  // Checked against Cognito's live group membership, not the token's own
+  // "cognito:groups" claim — that claim was frozen at login and would still
+  // let a since-revoked role through until the token expires.
+  const roles = rolesFromGroups(await groupsOf(payload.email));
   if (!roles.includes(role)) {
     return res.status(403).json({ message: "You are not authorized for this role." });
   }

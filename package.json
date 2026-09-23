@@ -31,6 +31,9 @@
           "credentials": {
             "url": "db/itsm.sqlite"
           }
+        },
+        "auth": {
+          "provider": "local"
         }
       },
       "auth": {
@@ -38,7 +41,10 @@
         "impl": "srv/auth.js"
       },
       "[hybrid]": {
-        "db": "hana"
+        "db": "hana",
+        "auth": {
+          "provider": "cognito"
+        }
       },
       "[production]": {
         "db": {

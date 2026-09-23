@@ -1,6 +1,8 @@
 sap.ui.define([
   "sap/ui/core/mvc/Controller",
   "sap/ui/model/json/JSONModel",
+  "sap/ui/model/Filter",
+  "sap/ui/model/FilterOperator",
   "sap/m/MessageToast",
   "sap/m/MessageBox",
   "sap/base/Log",
@@ -8,8 +10,9 @@ sap.ui.define([
   "itsm/ui/model/formatter",
   "itsm/ui/model/lookupValues",
   "itsm/ui/model/auth",
-  "itsm/ui/model/busy"
-], function (Controller, JSONModel, MessageToast, MessageBox, Log, getTicketFormUiModel, formatter, fetchLookup, auth, busy) {
+  "itsm/ui/model/busy",
+  "itsm/ui/model/createGuard"
+], function (Controller, JSONModel, Filter, FilterOperator, MessageToast, MessageBox, Log, getTicketFormUiModel, formatter, fetchLookup, auth, busy, createGuard) {
   "use strict";
 
   var UPDATE_GROUP = "incidentGroup";
@@ -77,6 +80,9 @@ sap.ui.define([
         reportedBy: this._getUserName(),
         incidentForm: {}
       });
+      // Fires whenever Save/Submit actually sends this — see createGuard.js
+      // for why created().catch() alone can't be trusted for this.
+      createGuard.guard(oListBinding, oContext, this.getView());
       this._oPendingCreateContext = oContext;
 
       this.getView().setBindingContext(oContext);
@@ -116,7 +122,7 @@ sap.ui.define([
       var oContext = this.getView().getModel().bindContext(
         "/Tickets(ticketID='" + sId + "')",
         undefined,
-        { $expand: "incidentForm,attachments" }
+        { $expand: "incidentForm,attachments,reportedByUser" }
       ).getBoundContext();
 
       this.getView().setBindingContext(oContext);
@@ -125,10 +131,22 @@ sap.ui.define([
       return oContext.requestObject().then(function (oTicket) {
         that._refreshUiModel(oTicket.status);
         that._setAttachmentsModel(oTicket.attachments, oContext);
+        that._scopeConsultantPicker(oTicket.reportedByUser && oTicket.reportedByUser.client);
         if (that.getView().getModel("ui").getProperty("/showReminder")) {
           return that._refreshReminderStatus(sId);
         }
       });
+    },
+
+    // Assign picker only offers Consultants from the reporter's own org —
+    // a blank org (ccentrik-wide staff) leaves the list unrestricted, same
+    // as the backend's org-scoping for Service Group/Consultant (service.js).
+    _scopeConsultantPicker: function (sClient) {
+      var oSelect = this.byId("messageProcessorSelect");
+      if (!oSelect) { return; }
+      var oBinding = oSelect.getBinding("items");
+      if (!oBinding) { return; }
+      oBinding.filter(sClient ? [new Filter("client", FilterOperator.EQ, sClient)] : []);
     },
 
     // Bell's enabled state + tooltip, refreshed whenever the ticket
@@ -221,6 +239,7 @@ sap.ui.define([
           MessageToast.show("Ticket saved");
         }
       }).catch(function (oError) {
+        if (oError.canceled) { return; } // already shown by createGuard
         // Logged, not just shown as a generic toast — otherwise "request
         // never sent" and "request sent, server rejected it" look identical
         // from the outside, which is exactly what made an earlier bug here
@@ -254,6 +273,7 @@ sap.ui.define([
           onClose: function () { that._navHome(); }
         });
       }).catch(function (oError) {
+        if (oError.canceled) { return; } // already shown by createGuard
         Log.error("Ticket submit failed", oError);
         MessageBox.error(that._actionErrorText(oError) || "Could not submit the ticket. Please check the required fields.");
       }));

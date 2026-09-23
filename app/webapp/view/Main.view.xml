@@ -84,7 +84,7 @@
 
               <VBox class="formField" visible="{ui>/visibility/assign}">
                 <Label text="Message Processor"/>
-                <Select selectedKey="{messageProcessor}" forceSelection="false" enabled="{ui>/editable/messageProcessor}" width="100%"
+                <Select id="messageProcessorSelect" selectedKey="{messageProcessor}" forceSelection="false" enabled="{ui>/editable/messageProcessor}" width="100%"
                         items="{ path: '/Users', parameters: { $filter : &quot;(userRoles/any(r:r/role eq 'CONSULTANT') or role eq 'CONSULTANT') and isActive eq true&quot;, $orderby: 'name' } }">
                   <core:Item key="{userId}" text="{name}"/>
                 </Select>

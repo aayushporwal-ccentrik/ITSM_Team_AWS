@@ -1033,13 +1033,6 @@ html[data-theme-scope="background"] .sapMITBSelected .sapMITBText { color: var(-
 .authInput .sapMFocus .sapMInputBaseContentWrapper,
 .authInput:focus-within .sapMInputBaseContentWrapper { border-color: #101828 !important; border-width: 2px !important; }
 
-.authPasswordField { position: relative; }
-.authPasswordToggle { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; }
-.authPasswordToggle .sapMBtnInner {
-  background: transparent !important; border: none !important; color: #667085 !important;
-  width: 36px !important; height: 36px !important; min-width: 36px !important; padding: 0 !important;
-}
-
 .authLink { display: block; margin-top: 12px; font-size: 13px; }
 .authButton { margin-top: 22px; }
 .authButton .sapMBtnInner {

@@ -15,7 +15,7 @@
       <contentLeft>
         <!-- This is the Service Group landing page, so no Back button —
              there's nowhere behind it. -->
-        <Image src="images/ccentrik.png" height="30px" densityAware="false" class="appLogo" press=".onGoDashboard"/>
+        <Image src="{= ${role>/theme/logo} || 'images/ccentrik.png' }" height="30px" densityAware="false" class="appLogo" press=".onGoDashboard"/>
       </contentLeft>
       <contentMiddle>
         <Title text="Service Group Dashboard" class="appHeaderTitle"/>
