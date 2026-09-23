@@ -79,6 +79,7 @@ module.exports = cds.service.impl(function () {
   this.before("CREATE", "Users", onBeforeCreateUser);
   this.after("CREATE", "Users", onAfterCreateUser);
   this.before("UPDATE", "Users", onBeforeUpdateUser);
+  this.before("DELETE", "Users", onBeforeDeleteUser);
   this.after("CREATE", "UserRoles", onUserRoleCreated);
   this.before("DELETE", "UserRoles", onBeforeDeleteUserRole);
   this.after("DELETE", "UserRoles", onUserRoleDeleted);
@@ -716,6 +717,20 @@ async function onBeforeUpdateUser(req) {
   } catch (error) {
     return req.error(400, `Could not update the user in Cognito: ${error.name || "unknown error"}`);
   }
+}
+
+// Cognito mode only (guarded): remove the Cognito identity when the admin
+// deletes a user. Read the row before CAP's generic handler deletes it — the
+// row is gone once DELETE actually runs. auth.deleteUser() already swallows
+// its own errors, so a Cognito failure never blocks the ITSM-side delete.
+async function onBeforeDeleteUser(req) {
+  if (!auth.deleteUser) { return; }
+
+  const [key] = req.params;
+  const user = await SELECT.one.from(User).where(key);
+  if (!user || !user.email) { return; }
+
+  await auth.deleteUser(user.email);
 }
 
 // The Admin panel edits a user's roles as UserRoles rows via generic CRUD, not
